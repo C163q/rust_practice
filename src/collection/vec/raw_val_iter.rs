@@ -1,4 +1,4 @@
-use std::mem::{self};
+use std::mem;
 use std::ptr::{self, NonNull};
 
 /// 源自The Rustonomicon
@@ -8,7 +8,7 @@ use std::ptr::{self, NonNull};
 /// 际并不拥有，使用时需要保证缓冲区的生命周期长于该类型。
 ///
 /// 见[`IntoIter`]中的描述。
-pub(crate) struct RawValIter<T> {
+pub(super) struct RawValIter<T> {
     start: *const T,
     end: *const T,
 }
@@ -166,5 +166,3 @@ impl<T> ExactSizeIterator for RawValIter<T> {
         (self.end as usize - self.start as usize) / if elem_size == 0 { 1 } else { elem_size }
     }
 }
-
-

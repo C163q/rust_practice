@@ -1,13 +1,16 @@
-mod raw_vec;
+mod drain;
+mod into_iter;
 mod raw_val_iter;
+mod raw_vec;
+mod vec_macro;
 
-use std::marker::PhantomData;
-use std::mem::{self};
-use std::ops::{Deref, DerefMut};
-use std::ptr::{self};
-use std::{slice};
 use raw_vec::MyRawVec;
-use raw_val_iter::RawValIter;
+use std::ops::{Deref, DerefMut};
+use std::ptr;
+use std::slice;
+
+pub use drain::Drain;
+pub use into_iter::IntoIter;
 
 #[derive(Debug)]
 pub struct MyVec<T> {
@@ -72,9 +75,10 @@ impl<T> MyVec<T> {
             // SAFETY:
             // 此处使用了filter来保证new_cap不会超过`isize::MAX`
             self.buf.reserve_exact(
-                self.len.checked_add(additional)
-                        .filter(|&new_cap| new_cap <= isize::MAX as usize)
-                        .expect("Allocation too large")
+                self.len
+                    .checked_add(additional)
+                    .filter(|&new_cap| new_cap <= isize::MAX as usize)
+                    .expect("Allocation too large"),
             );
         }
     }
@@ -257,8 +261,7 @@ impl<T> Drop for MyVec<T> {
     // `MyRawVec`会自动帮助释放内存空间
 }
 
-impl<T> Clone for MyVec<T>
-    where T: Clone {
+impl<T: Clone> Clone for MyVec<T> {
     fn clone(&self) -> Self {
         let raw = MyRawVec::<T>::with_capacity(self.len);
         let mut ptr = raw.ptr().as_ptr();
@@ -309,221 +312,13 @@ impl<'a, T: Clone> Extend<&'a T> for MyVec<T> {
     }
 }
 
-/// 源自The Rustonomicon
-///
-/// 既然我们已经为[`MyVec`]实现了[`Deref`]和[`DerefMut`]
-/// 自然就表示我们已经可以使用`[T]`的`iter`和`iter_mut`方
-/// 法了。但是我们仍然没有`into_iter`方法，这表明需要我们
-/// 自己去实现。
-///
-/// ## 实现方式
-///
-/// [`IntoIter`]按值消费`MyVec`，并依序按值产出其中的元素。
-/// 为了获取元素的所有权，需要让`IntoIter`获取`MyVec`分配
-/// 的空间，因此需要一个`MyRawVec`。由于[`Vec`]的特性，
-/// `IntoIter`也应该是[`DoubleEndedIterator`]，为支持该特
-/// 性，可以使用两个指针指向开始和超尾处。
-///
-/// ```text
-///  start  end
-///    ↓     ↓
-/// +-+-+-+-+-+
-/// |U|1|2|3|U|
-/// +-+-+-+-+-+
-/// U: 被移出的元素（逻辑上未初始化）
-/// ```
-///
-/// 当两个指针相遇时，迭代结束：
-///
-/// ```text
-///    start
-///      ↓
-/// +-+-+-+-+-+
-/// |U|U|U|U|U|
-/// +-+-+-+-+-+
-///      ↑
-///     end
-/// ```
-///
-/// 这是由于向前迭代或者向后迭代都是基于同一块内存的，并
-/// 且调用向前迭代和向后迭代的顺序是任意的，因此我们不应
-/// 当继续迭代。见[`DoubleEndedIterator`]
-///
-/// > It is important to note that both back and forth
-/// > work on the same range, and do not cross: iteration
-/// > is over when they meet in the middle.
-///
-/// ## 处理ZST
-///
-/// 而对于ZST来说，由于其指针的偏移永远为0，这就导致按照
-/// 上面的表示方法，其start指针和end指针永远指向同一个地
-/// 方，因此迭代器永远会产出[`None`]。
-///
-/// 目前的解决方案是对ZST特别讨论，start的保持不变，将
-/// `start as usize - end as usize`定义为剩余的元素个数，
-/// 向后迭代则`start as usize + 1`，向前迭代则`end as usize - 1`。
-/// 由于我们指定了ZST的容量为[`isize::MAX`]，因此`end`一
-/// 定不会溢出。
-///
-/// ## [`RawValIter`]抽象
-///
-/// 考虑到接下来[`Drain`]的逻辑中，也存在双向迭代，因此可
-/// 以将这部分的内容放到[`RawValIter`]中。
-pub struct IntoIter<T> {
-    // 我们并不使用`MyRawVec`中的任何逻辑，我们只是希望保有缓冲区，
-    // 并在使用完后自动释放内存空间。
-    _buf: MyRawVec<T>,
-    iter: RawValIter<T>,
-}
-
-impl<T> Iterator for IntoIter<T> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        self.iter.next()
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-impl<T> DoubleEndedIterator for IntoIter<T> {
-    fn next_back(&mut self) -> Option<T> {
-        self.iter.next_back()
-    }
-}
-
-impl<T> ExactSizeIterator for IntoIter<T> {
-    fn len(&self) -> usize {
-        self.iter.len()
-    }
-}
-
-impl<T> Drop for IntoIter<T> {
-    fn drop(&mut self) {
-        // 由于[`IntoIterator::into_iter`]会自动为实现了[`Iterator`]
-        // 的类型实现，因此下面的循环可以执行。他会获取剩余元素的所
-        // 有权，然后drop。
-        for _ in &mut *self {}
-    }
-}
-
-impl<T> IntoIterator for MyVec<T> {
-    type Item = T;
-    type IntoIter = IntoIter<T>;
-    fn into_iter(self) -> IntoIter<T> {
-        unsafe {
-            let iter = RawValIter::new(&self);
-
-            // 获取`MyVec`中分配的空间的所有权并阻止其drop
-            let buf = ptr::read(&self.buf);
-            mem::forget(self);
-
-            IntoIter { iter, _buf: buf }
-        }
-    }
-}
-
-impl<'a, T> IntoIterator for &'a MyVec<T> {
-    type Item = &'a T;
-    type IntoIter = slice::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl<'a, T> IntoIterator for &'a mut MyVec<T> {
-    type Item = &'a mut T;
-    type IntoIter = slice::IterMut<'a, T>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
-    }
-}
-
-/// 源自The Rustonomicon
-///
-/// [`Drain`]是通过[`MyVec::drain`]返回的，其主要功能是移除
-/// 指定范围的[`MyVec`]子序列，并返回该范围的[`DoubleEndedIterator`]。
-///
-/// `Drain`在执行[`drop`]的时候，会drop掉剩余未消费的元素，
-/// 并使得原[`MyVec`]中空缺的位置被后续的元素补位。
-///
-/// 使用[`MyVec::drain`]会让`Drain`拥有`MyVec`的可变引用，这
-/// 使得在`Drain`的生命周期内，无法获取`MyVec`的引用。
-///
-/// 编写`Drain`的迭代基本可以套用[`RawValIter`]，我们将值移出
-/// 缓冲区之后，就将那块内存当作未初始化的内存。编写析构的时
-/// 候，只需要把未移出缓冲区的元素全部移出缓冲区，然后将`MyRawVec`
-/// 中后面的元素向前移动补位，并设置合适的长度即可。
-///
-/// 根据Rustonomicon，这样编写`Drain`时，可能会存在一个问题：
-///
-/// [`mem::forget`]是安全的代码，但比如现在`Drain`迭代到了一
-/// 半，现在`MyVec`中一半的空间是未初始化的，另外一半仍然有效，
-/// 接着我对`Drain`调用了`mem::forget`，这导致我们没有机会执
-/// 行析构函数中的逻辑！也就是说，元素没有机会补位，我们没有
-/// 设置正确长度的机会！
-///
-/// 此时，我们访问`MyVec`中的元素时，就可能会访问那些未初始化
-/// 的内存。更糟的是，在对`MyVec`执行`drop`时，会对其中的部分
-/// 内容二次析构。无论那种情况，都不应该暴露到safe代码中。
-///
-/// 我们确实可以在每次移出元素的同时，让后面的元素向前移动，
-/// 这样即使调用了`mem::forget`，也不会导致上述问题。但这会导
-/// 致性能下降。
-///
-/// 我们可以在创建`Drain`时，将引用的`MyVec`的大小设置为0，而
-/// 在`drop`时赋予正确的值。这使得如果调用了`mem::forget`，就
-/// 无法访问`MyVec`中的元素，但其中的元素也不会被`drop`。可是
-/// 既然`mem::forget`属于安全的代码，那么这也必然是安全的。
-///
-/// 我们将泄露(leak)导致更多的泄露称为泄露放大(leak amplification)。
-pub struct Drain<'a, T: 'a> {
-    // 在此，我们需要绑定生命周期，我们需要使用`&'a mut MyVec<T>`，
-    // 因为在语义上，我们拥有一个`MyVec`的引用，但并不使用它。
-    vec: PhantomData<&'a mut MyVec<T>>,
-    iter: RawValIter<T>,
-}
-
-impl<'a, T> Iterator for Drain<'a, T> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        self.iter.next()
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
-    fn next_back(&mut self) -> Option<T> {
-        self.iter.next_back()
-    }
-}
-
-impl<'a, T> Drop for Drain<'a, T> {
-    fn drop(&mut self) {
-        // 这会自动drop剩余元素
-        for _ in &mut *self {}
-        // 由于我们暂时没有传入范围作为参数的逻辑，因此`self.len`
-        // 必然为0，也就没有必要再去修改了。
-    }
-}
-
-impl<T> MyVec<T> {
-    /// 此处我们先暂时不考虑传入范围作为参数，仅仅是实现整个[`MyVec`]
-    /// 都被drain的情况。
-    pub fn drain(&mut self) -> Drain<'_, T> {
-        let iter = unsafe { RawValIter::new(self) };
-
-        // 这是为了保证在使用`mem::forget`之后，仍然是安全的。如果`Drain`
-        // 被forget了，我们就让整个`MyVec`都泄露了。并且，我们反正总归要
-        // 将其长度设置为0，为什么不现在就做。
-        self.len = 0;
-
-        Drain {
-            iter,
-            vec: PhantomData,
-        }
+impl<T> FromIterator<T> for MyVec<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut ret = Self::with_capacity(lower);
+        ret.extend_from_iter(iter);
+        ret
     }
 }
 

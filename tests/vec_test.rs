@@ -1,4 +1,4 @@
-use rust_practice::collection::vec::MyVec;
+use rust_practice::{collection::vec::MyVec, my_vec};
 
 #[test]
 fn simple_vec_usage_1() {
@@ -49,3 +49,11 @@ fn vec_with_capacity() {
     assert_eq!(vec_units.capacity(), usize::MAX);
 }
 
+#[test]
+fn vec_from_iter() {
+    let five_fives = std::iter::repeat_n(5, 5);
+
+    let v: MyVec<i32> = five_fives.collect();
+
+    assert_eq!(v, my_vec![5, 5, 5, 5, 5]);
+}

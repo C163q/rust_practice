@@ -1,7 +1,6 @@
 use std::alloc::{self, Layout};
-use std::mem::{self};
-use std::ptr::{NonNull};
-
+use std::mem;
+use std::ptr::NonNull;
 
 /// 源自The Rustonomicon
 ///
@@ -31,7 +30,7 @@ use std::ptr::{NonNull};
 /// 向可变变量的const指针转换为mut指针不是未定义行为，因此
 /// 通过`NonNull`获取`*mut T`是安全的。
 #[derive(Debug)]
-pub(crate) struct MyRawVec<T> {
+pub(super) struct MyRawVec<T> {
     ptr: NonNull<T>,
     cap: usize,
 }
@@ -196,7 +195,7 @@ impl<T> MyRawVec<T> {
     pub fn grow(&mut self) {
         // 由于我们已经将ZST的容量设置为isize::MAX了，所以如果ZST
         // 执行了这个函数必然表示其容量溢出了。
-        Self::check_zst();
+        assert!(mem::size_of::<T>() != 0, "capacity overflow");
 
         let (new_cap, new_layout) = if self.cap == 0 {
             (1, Layout::array::<T>(1).unwrap())
@@ -207,8 +206,7 @@ impl<T> MyRawVec<T> {
             // `Layout::array`会检查字节数是小于等于isize::MAX的，但由于
             // 这正是我们希望检查的，我们希望在字节数超过isize::MAX时直接
             // panic。
-            let new_layout = Layout::array::<T>(new_cap)
-                .expect("Allocation too large");
+            let new_layout = Layout::array::<T>(new_cap).expect("Allocation too large");
             (new_cap, new_layout)
         };
 
@@ -225,8 +223,7 @@ impl<T> MyRawVec<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         let mut ret = Self::new();
         if mem::size_of::<T>() != 0 && capacity > 0 {
-            let layout = Layout::array::<T>(capacity)
-                .expect("Allocation too large");
+            let layout = Layout::array::<T>(capacity).expect("Allocation too large");
             let ptr = unsafe { ret.try_alloc_new(layout) };
 
             ret.ptr = Self::handle_alloc_err(ptr as *mut T, layout);
@@ -238,16 +235,16 @@ impl<T> MyRawVec<T> {
     /// ## safety
     /// 此处必须保证exact_cap不会超过`isize::MAX`，即使是ZST！
     pub unsafe fn reserve_exact(&mut self, exact_cap: usize) {
-        if exact_cap <= self.cap { return; }
+        if exact_cap <= self.cap {
+            return;
+        }
 
-        let new_layout = Layout::array::<T>(exact_cap)
-            .expect("Allocation too large");
+        let new_layout = Layout::array::<T>(exact_cap).expect("Allocation too large");
         let new_ptr = self.try_alloc(new_layout);
-        
+
         self.ptr = Self::handle_alloc_err(new_ptr as *mut T, new_layout);
         self.cap = exact_cap;
     }
-
 
     /// 如果分配失败了，`new_ptr`会是空指针，对应产生None，此处使用
     /// `alloc::handle_alloc_error`终止程序。
@@ -273,7 +270,9 @@ impl<T> MyRawVec<T> {
         if self.cap != 0 {
             let old_layout = Layout::array::<T>(self.cap).unwrap();
             let old_ptr = self.ptr.as_ptr() as *mut u8;
-            unsafe { alloc::dealloc(old_ptr, old_layout); }
+            unsafe {
+                alloc::dealloc(old_ptr, old_layout);
+            }
         }
         NonNull::dangling().as_ptr()
     }
@@ -302,11 +301,6 @@ impl<T> MyRawVec<T> {
         let old_ptr = self.ptr.as_ptr() as *mut u8;
         unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) }
     }
-
-    #[inline]
-    pub fn check_zst() {
-        assert!(mem::size_of::<T>() != 0, "capacity overflow");
-    }
 }
 
 impl<T> Drop for MyRawVec<T> {
@@ -331,5 +325,3 @@ impl<T> Drop for MyRawVec<T> {
         }
     }
 }
-
-
