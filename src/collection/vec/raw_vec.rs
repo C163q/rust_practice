@@ -232,7 +232,7 @@ impl<T> MyRawVec<T> {
         ret
     }
 
-    /// ## safety
+    /// ## Safety
     /// 此处必须保证exact_cap不会超过`isize::MAX`，即使是ZST！
     pub unsafe fn reserve_exact(&mut self, exact_cap: usize) {
         if exact_cap <= self.cap {
@@ -291,9 +291,9 @@ impl<T> MyRawVec<T> {
         unsafe { alloc::alloc(new_layout) }
     }
 
-    /// ## safety
+    /// ## Safety
     ///
-    /// - `new_layout.size`应当保证不为0
+    /// - 必须保证`new_layout.size()`不为0
     /// - 类型T不应当是ZST
     #[inline]
     unsafe fn try_realloc(&mut self, new_layout: Layout) -> *mut u8 {

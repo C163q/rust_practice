@@ -1,5 +1,8 @@
+use std::{marker::PhantomData, ops::RangeBounds, ptr::NonNull};
+use std::ptr;
+
 use crate::collection::vec::{MyVec, raw_val_iter::RawValIter};
-use std::marker::PhantomData;
+use crate::collection;
 
 /// 源自The Rustonomicon
 ///
@@ -19,11 +22,11 @@ use std::marker::PhantomData;
 ///
 /// 根据Rustonomicon，这样编写`Drain`时，可能会存在一个问题：
 ///
-/// [`mem::forget`]是安全的代码，但比如现在`Drain`迭代到了一
-/// 半，现在`MyVec`中一半的空间是未初始化的，另外一半仍然有效，
-/// 接着我对`Drain`调用了`mem::forget`，这导致我们没有机会执
-/// 行析构函数中的逻辑！也就是说，元素没有机会补位，我们没有
-/// 设置正确长度的机会！
+/// [`std::mem::forget`]是安全的代码，但比如现在`Drain`迭代到
+/// 了一半，现在`MyVec`中一半的空间是未初始化的，另外一半仍然
+/// 有效，接着我对`Drain`调用了`mem::forget`，这导致我们没有
+/// 机会执行析构函数中的逻辑！也就是说，元素没有机会补位，我
+/// 们没有设置正确长度的机会！
 ///
 /// 此时，我们访问`MyVec`中的元素时，就可能会访问那些未初始化
 /// 的内存。更糟的是，在对`MyVec`执行`drop`时，会对其中的部分
@@ -39,11 +42,25 @@ use std::marker::PhantomData;
 /// 既然`mem::forget`属于安全的代码，那么这也必然是安全的。
 ///
 /// 我们将泄露(leak)导致更多的泄露称为泄露放大(leak amplification)。
+///
+/// ## 关于成员的考量（自己写）
+///
+/// 在此处，我们不能使用`&'a MyVec<T>`，因为根据[`std::ptr`](https://doc.rust-lang.org/std/ptr/index.html#pointer-to-reference-conversion)
+/// 文档中提到的：
+///
+/// > When creating a mutable reference, then while this reference exists,
+/// > the memory it points to must not get accessed (read or written) through
+/// > any other pointer or reference not derived from this reference.
+///
+/// 因此我们必须使用一个[`NonNull`]。此外，我们还需要绑定一个
+/// 生命周期，这个生命周期不能超过引用的`MyVec`的生命周期，因
+/// 此我们使用`PhantomData<&'a MyVec>`。
 pub struct Drain<'a, T: 'a> {
-    // 在此，我们需要绑定生命周期，我们需要使用`&'a mut MyVec<T>`，
-    // 因为在语义上，我们拥有一个`MyVec`的引用，但并不使用它。
-    vec: PhantomData<&'a mut MyVec<T>>,
+    _marker: PhantomData<&'a MyVec<T>>,
+    vec: NonNull<MyVec<T>>,
     iter: RawValIter<T>,
+    before_len: usize,
+    after_len: usize,
 }
 
 impl<'a, T> Iterator for Drain<'a, T> {
@@ -66,25 +83,55 @@ impl<'a, T> Drop for Drain<'a, T> {
     fn drop(&mut self) {
         // 这会自动drop剩余元素
         for _ in &mut *self {}
-        // 由于我们暂时没有传入范围作为参数的逻辑，因此`self.len`
-        // 必然为0，也就没有必要再去修改了。
+
+        let vec_ref = unsafe { self.vec.as_mut() };
+        let vec_len = vec_ref.len();
+        let vec_ptr = vec_ref.as_mut_ptr();
+        // `self.vec.as_mut()`在此处结束生命周期，所以使用*mut T是安全的
+
+        let before_len = self.before_len;
+        let after_len = self.after_len;
+
+        // SAFETY:
+        // 此处无论是`before_len`还是`vec_len - after_len`都是不超过
+        // `vec_len`的，因此不会到分配空间之外。
+        //
+        // 此外，`vec_len - after_len`的结果为创建时的`range.end`，不可能
+        // 下溢。
+        //
+        // 我们始终保证`after_len`记录了`range.end`之后（包括本身）的元素
+        // 个数，所以使用[`copy`]不会越界。`before_len + after_len`正好是
+        // 剩下的元素个数，我们用该值恢复[`MyVec`]的长度。
+        unsafe {
+            let hole_begin = vec_ptr.add(before_len);
+            let hole_end = vec_ptr.add(vec_len - after_len);
+
+            ptr::copy(hole_end, hole_begin, after_len);
+            self.vec.as_mut().set_len(before_len + after_len);
+        };
     }
 }
 
 impl<T> MyVec<T> {
     /// 此处我们先暂时不考虑传入范围作为参数，仅仅是实现整个[`MyVec`]
     /// 都被drain的情况。
-    pub fn drain(&mut self) -> Drain<'_, T> {
-        let iter = unsafe { RawValIter::new(self) };
+    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Drain<'_, T> {
+        let range = collection::slice::range(range, ..self.len);
+        let iter = unsafe { RawValIter::new(&self[range.clone()]) };
+
+        let before_len = range.start;
+        let after_len = self.len - range.end;
 
         // 这是为了保证在使用`mem::forget`之后，仍然是安全的。如果`Drain`
-        // 被forget了，我们就让整个`MyVec`都泄露了。并且，我们反正总归要
-        // 将其长度设置为0，为什么不现在就做。
+        // 被forget了，我们就让整个`MyVec`都泄露了。
         self.len = 0;
 
         Drain {
+            before_len,
+            after_len,
             iter,
-            vec: PhantomData,
+            vec: NonNull::from_mut(self),
+            _marker: PhantomData,
         }
     }
 }

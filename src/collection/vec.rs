@@ -20,7 +20,7 @@ pub struct MyVec<T> {
 
 impl<T> MyVec<T> {
     #[inline]
-    pub fn as_mut_ptr(&self) -> *mut T {
+    pub fn as_mut_ptr(&mut self) -> *mut T {
         self.buf.ptr().as_ptr()
     }
 
@@ -48,14 +48,16 @@ impl<T> MyVec<T> {
         }
     }
 
-    pub const fn len(&self) -> usize {
-        self.len
+    /// ## Safety
+    ///
+    /// - `new_len`不应该超过`capacity()`
+    /// - `old_len..new_len`的元素必须被初始化
+    #[inline]
+    pub unsafe fn set_len(&mut self, new_len: usize) {
+        self.len = new_len;
     }
 
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
+    #[inline]
     pub fn new() -> Self {
         MyVec {
             buf: MyRawVec::new(),
@@ -63,6 +65,7 @@ impl<T> MyVec<T> {
         }
     }
 
+    #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         MyVec {
             buf: MyRawVec::with_capacity(capacity),
@@ -70,6 +73,7 @@ impl<T> MyVec<T> {
         }
     }
 
+    #[inline]
     pub fn reserve(&mut self, additional: usize) {
         unsafe {
             // SAFETY:
@@ -84,6 +88,7 @@ impl<T> MyVec<T> {
     }
 
     /// 详细说明见[`MyVec::drop`]
+    #[inline]
     pub fn clear(&mut self) {
         while self.pop().is_some() {}
     }
@@ -155,7 +160,7 @@ impl<T> MyVec<T> {
 
         unsafe {
             ptr::copy(
-                self.as_mut_ptr().add(index),
+                self.as_ptr().add(index),
                 self.as_mut_ptr().add(index + 1),
                 self.len - index,
             );
@@ -197,7 +202,37 @@ impl<'a, T: Clone + 'a> MyVec<T> {
                 self.reserve(lower.saturating_add(1));
             }
             unsafe {
-                let ptr = self.as_mut_ptr().add(self.len);
+                let ptr = self.as_mut_ptr().add(self.len());
+                ptr::write(ptr, refer.clone());
+                self.len += 1;
+            }
+        }
+    }
+}
+
+impl<T: Clone> MyVec<T> {
+    #[allow(unused)]
+    pub fn extend_from_slice(&mut self, other: &[T]) {
+        let remain = self.capacity() - self.len();
+        let needs = other.len();
+        if needs > remain {
+            self.reserve(unsafe {
+                needs.unchecked_sub(remain)
+            });
+        }
+        unsafe {
+            self.unchecked_extend_from_slice(other)
+        }
+    }
+
+    /// ## Safety
+    ///
+    /// - [`MyVec`]的`capacity`必须足够容纳下整个`&[T]`
+    unsafe fn unchecked_extend_from_slice(&mut self, slice: &[T]) {
+        let iter = slice.iter();
+        for refer in iter {
+            unsafe {
+                let ptr = self.as_mut_ptr().add(self.len());
                 ptr::write(ptr, refer.clone());
                 self.len += 1;
             }
@@ -226,7 +261,7 @@ impl<T> Default for MyVec<T> {
 impl<T> Deref for MyVec<T> {
     type Target = [T];
     fn deref(&self) -> &Self::Target {
-        unsafe { slice::from_raw_parts(self.as_mut_ptr(), self.len) }
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 }
 
@@ -264,12 +299,12 @@ impl<T> Drop for MyVec<T> {
 impl<T: Clone> Clone for MyVec<T> {
     fn clone(&self) -> Self {
         let raw = MyRawVec::<T>::with_capacity(self.len);
-        let mut ptr = raw.ptr().as_ptr();
+        let ptr = raw.ptr().as_ptr();
 
-        for elem in self {
+        for (idx, element) in self.iter().enumerate() {
             unsafe {
-                ptr::write(ptr, elem.clone());
-                ptr = ptr.add(1);
+                let ptr = ptr.add(idx);
+                ptr::write(ptr, element.clone());
             }
         }
 
@@ -294,9 +329,21 @@ impl<T: PartialEq> PartialEq<[T]> for MyVec<T> {
     }
 }
 
+impl<T: PartialEq> PartialEq<&[T]> for MyVec<T> {
+    fn eq(&self, other: &&[T]) -> bool {
+        (**self).eq(*other)
+    }
+}
+
 impl<T: PartialEq, const N: usize> PartialEq<[T; N]> for MyVec<T> {
     fn eq(&self, other: &[T; N]) -> bool {
         (**self).eq(other)
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq<&[T; N]> for MyVec<T>{
+    fn eq(&self, other: &&[T; N]) -> bool {
+        (**self).eq(*other)
     }
 }
 
@@ -319,6 +366,34 @@ impl<T> FromIterator<T> for MyVec<T> {
         let mut ret = Self::with_capacity(lower);
         ret.extend_from_iter(iter);
         ret
+    }
+}
+
+impl<T: Clone> From<&[T]> for MyVec<T> {
+    fn from(value: &[T]) -> Self {
+        let mut ret = MyVec::with_capacity(value.len());
+        unsafe {
+            ret.unchecked_extend_from_slice(value);
+        }
+        ret
+    }
+}
+
+impl<T: Clone> From<&mut [T]> for MyVec<T> {
+    fn from(value: &mut [T]) -> Self {
+        Self::from(&*value)
+    }
+}
+
+impl<T: Clone, const N: usize> From<&[T; N]> for MyVec<T> {
+    fn from(value: &[T; N]) -> Self {
+        Self::from(value.as_slice())
+    }
+}
+
+impl<T: Clone, const N: usize> From<&mut [T; N]> for MyVec<T> {
+    fn from(value: &mut [T; N]) -> Self {
+        Self::from(value.as_mut_slice())
     }
 }
 
