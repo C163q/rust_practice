@@ -1,4 +1,5 @@
 use std::mem;
+use std::num::NonZero;
 use std::ptr::{self, NonNull};
 
 /// 源自The Rustonomicon
@@ -8,8 +9,11 @@ use std::ptr::{self, NonNull};
 /// 际并不拥有，使用时需要保证缓冲区的生命周期长于该类型。
 ///
 /// 见[`IntoIter`]中的描述。
+///
+/// 我们在此处将*const T替换为[`NonNull<T>`]，以便显式表明`start`
+/// 需要一个*mut T，这样才能够方便`IntoIter`去`drop`元素。
 pub(super) struct RawValIter<T> {
-    start: *const T,
+    start: NonNull<T>,
     end: *const T,
 }
 
@@ -76,9 +80,9 @@ impl<T> RawValIter<T> {
     /// 的。
     ///
     /// 此处，The Rustonomicon保守地增加了一个新的分支。
-    pub unsafe fn new(slice: &[T]) -> Self {
+    pub unsafe fn new(slice: &mut [T]) -> Self {
         RawValIter {
-            start: slice.as_ptr(),
+            start: NonNull::from_mut(unsafe { &mut *slice.as_mut_ptr() }),
             end: if mem::size_of::<T>() == 0 {
                 ((slice.as_ptr() as usize) + slice.len()) as *const _
             } else if slice.is_empty() {
@@ -88,6 +92,21 @@ impl<T> RawValIter<T> {
                 unsafe { slice.as_ptr().add(slice.len()) }
             },
         }
+    }
+
+    #[inline]
+    pub fn start(&self) -> *const T {
+        self.start.as_ptr()
+    }
+
+    #[inline]
+    pub fn start_mut(&self) -> *mut T {
+        self.start.as_ptr()
+    }
+
+    #[inline]
+    pub fn end(&self) -> *const T {
+        self.end
     }
 }
 
@@ -101,18 +120,20 @@ impl<T> Iterator for RawValIter<T> {
     /// 1. 获取start指向的内存空间元素的所有权
     /// 2. 向后移动，将刚才读取的位置作为逻辑上未初始化的空间
     fn next(&mut self) -> Option<T> {
-        if self.start == self.end {
+        if self.start() == self.end() {
             None
         } else {
             unsafe {
                 if mem::size_of::<T>() == 0 {
-                    self.start = (self.start as usize + 1) as *const _;
+                    self.start = self
+                        .start
+                        .map_addr(|addr| NonZero::<usize>::new_unchecked(usize::from(addr) + 1));
                     // 我们应当始终保证调用[`ptr::read`]的裸指针是对齐的，即使
                     // 对于ZST来说，`ptr::read`什么也不做。在此处，我们不能保证
                     // `self.start`是对齐的，因此我们选择传入[`NonNull::dangling`]。
                     Some(ptr::read(NonNull::<T>::dangling().as_ptr()))
                 } else {
-                    let old_ptr = self.start;
+                    let old_ptr = self.start();
                     self.start = self.start.offset(1);
                     // 获取元素所有权，并将其作为逻辑上未初始化空间
                     Some(ptr::read(old_ptr))
@@ -139,15 +160,15 @@ impl<T> DoubleEndedIterator for RawValIter<T> {
     /// 2. 获取end指向的内存空间元素的所有权，并将该位置作为逻辑上
     ///    未初始化的空间
     fn next_back(&mut self) -> Option<T> {
-        if self.start == self.end {
+        if self.start() == self.end() {
             None
         } else {
             unsafe {
                 if mem::size_of::<T>() == 0 {
-                    self.end = (self.end as usize - 1) as *const _;
+                    self.end = self.end.map_addr(|addr| addr - 1);
                     Some(ptr::read(NonNull::<T>::dangling().as_ptr()))
                 } else {
-                    self.end = self.end.offset(-1);
+                    self.end = self.end().offset(-1);
                     Some(ptr::read(self.end))
                 }
             }
@@ -163,6 +184,6 @@ impl<T> DoubleEndedIterator for RawValIter<T> {
 impl<T> ExactSizeIterator for RawValIter<T> {
     fn len(&self) -> usize {
         let elem_size = mem::size_of::<T>();
-        (self.end as usize - self.start as usize) / if elem_size == 0 { 1 } else { elem_size }
+        (self.end() as usize - self.start() as usize) / if elem_size == 0 { 1 } else { elem_size }
     }
 }

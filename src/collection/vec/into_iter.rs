@@ -97,19 +97,19 @@ impl<T> FusedIterator for IntoIter<T> {}
 
 impl<T> Drop for IntoIter<T> {
     fn drop(&mut self) {
-        // 由于[`IntoIterator::into_iter`]会自动为实现了[`Iterator`]
-        // 的类型实现，因此下面的循环可以执行。他会获取剩余元素的所
-        // 有权，然后drop。
-        for _ in &mut *self {}
+        unsafe {
+            let drop_array: *mut [T] = slice::from_raw_parts_mut(self.iter.start_mut(), self.len());
+            ptr::drop_in_place(drop_array);
+        }
     }
 }
 
 impl<T> IntoIterator for MyVec<T> {
     type Item = T;
     type IntoIter = IntoIter<T>;
-    fn into_iter(self) -> IntoIter<T> {
+    fn into_iter(mut self) -> IntoIter<T> {
         unsafe {
-            let iter = RawValIter::new(&self);
+            let iter = RawValIter::new(&mut self);
 
             // 获取`MyVec`中分配的空间的所有权并阻止其drop
             let buf = ptr::read(&self.buf);

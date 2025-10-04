@@ -12,23 +12,86 @@ use std::ptr::NonNull;
 /// `MyRawVec`用于管理内存的分配、释放和容量增长逻辑。
 ///
 /// 其包含[`NonNull<T>`]类型的`ptr`（表示指向分配的内存
-/// 空间）和[`usize`]类型的`cap`（表示最多可以容纳的元素
-/// 个数）
+/// 空间）和[`usize`]类型的`cap`（表示最多可以容纳的元
+/// 素个数）
 ///
 /// ## 成员类型选择
 ///
 /// `ptr`不应当使用`*mut T`，其原因是在此情况下，`MyRawVec<T>`
-/// 在`T`上是不变的(invariant)。这就导致`MyVec<T>`在`T`上
-/// 是不变的。也就是说，一个`&MyVec<&'static str>`不能传
-/// 给需要`&MyVec<&'a str>`的地方。
+/// 在`T`上是不变的(invariant)。这就导致`MyVec<T>`在`T`
+/// 上是不变的。也就是说，一个`&MyVec<&'static str>`不
+/// 能传给需要`&MyVec<&'a str>`的地方。
 ///
 /// `NonNull<T>`在`T`上是协变的(covariant)，因此`MyVec<T>`
-/// 在`T`上是协变的。此外，`NonNull`保证其指针永远不为空，
-/// 从而允许空指针优化。
+/// 在`T`上是协变的。此外，`NonNull`保证其指针永远不为
+/// 空，从而允许空指针优化。
 ///
-/// `NonNull`的是`*const T`的包装，因此它是协变的。一个指
-/// 向可变变量的const指针转换为mut指针不是未定义行为，因此
-/// 通过`NonNull`获取`*mut T`是安全的。
+/// `NonNull`的是`*const T`的包装，因此它是协变的。一个
+/// 指向可变变量的const指针转换为mut指针不是未定义行为，
+/// 因此通过`NonNull`获取`*mut T`是安全的。
+///
+/// ## 使用PhantomData (Unstable)
+///
+/// **未使用，由于`#[may_dangle]`是unstable的**
+///
+/// 此部分内容在The Rustonomicon中有提及，见[PhantomData章节](https://doc.rust-lang.org/nomicon/phantom-data.html)
+///
+/// 大体内容如下：
+///
+/// 如果我需要表明我拥有类型T，如果仅仅是有一个指向存储
+/// T的指针是不够的，这将会导致对T的访问在任意生命周期
+/// 都会有效，此时可以使用[`PhantomData<T>`]来表明该类
+/// 型拥有T，因此T的生命周期与该类型的生命周期相同。
+///
+/// 但在`RFC 1238`之后，任何包含[`Drop`]的类型都隐含的
+/// 被认为持有其`Drop`中使用的泛型类型的所有权。这里是
+/// `impl<T> Drop for MyRawVec<T>`，因此，`MyRawVec<T>`
+/// 拥有T。
+///
+/// 此处使用`PhantomData<T>`是为了另外一个意图，示例如
+/// 下：
+///
+/// ```rust,no_run
+/// {
+///     let mut v: Vec<&str> = Vec::new();
+///     let s: String = "Short-lived".into();
+///     v.push(&s);
+///     drop(s);
+/// } // <- `v` is dropped here
+/// ```
+///
+/// 试想，站在编译器的角度，`Vec<&str>`是拥有`&str`的，
+/// 因此，编译器应当保证在`Vec<&str>`被drop之前，其中的
+/// `&str`不是悬垂的，而`s`则是被&str引用的，它应当在`Vec`
+/// 被`drop`之前都有效，因此编译器有理由对上述代码报错。
+///
+/// 站在程序员的角度，我们在`drop`的s之后，我们并不再使
+/// 用Vec的内容，因此即使`&str`是悬垂的也无所谓。此外，
+/// 在`Vec`被`drop`时，我们不会访问`&str`中的内容，所以
+/// 我们不关心它是否悬垂。
+///
+/// 为了实现上面的意图，可以使用一个unsafe的`#[may_dangle]`：
+///
+/// ```rust,ignore
+/// unsafe impl<#[may_dangle] 's> Drop for Vec<&'s str> { /* … */ }
+/// ```
+/// 也就是说，我们允许在使用`&'s str`的时候，它是悬垂的。
+///
+/// 更一般的，我们使用：
+/// ```rust,ignore
+/// unsafe impl<#[may_dangle] T> Drop for Vec<T> { /* … */ }
+/// ```
+///
+/// 但考虑到以下问题：
+///
+/// 如果将`Vec<&'s str>`修改为`Vec<PrintOnDrop<'s>>`呢？
+/// 由于`PrintOnDrop<'s>`在`drop`中使用了生命周期为`'s`
+/// 的引用，因此此时不应该悬垂。
+///
+/// 为了表达这个意图，rust会在类型拥有`T`时，如果这个`T`
+/// 需要`drop`，会禁用`#[may_dangle]`。但在此场景下，仅
+/// 当泛型参数**以拥有的方式被结构体字段使用**时，才会生
+/// 效，也就是`RFC 1238`不再适用。我们必须手动使用`PhantomData<T>`
 #[derive(Debug)]
 pub(super) struct MyRawVec<T> {
     ptr: NonNull<T>,
@@ -53,12 +116,12 @@ unsafe impl<T: Sync> Sync for MyRawVec<T> {}
 
 impl<T> MyRawVec<T> {
     #[inline]
-    pub fn ptr(&self) -> NonNull<T> {
+    pub const fn ptr(&self) -> NonNull<T> {
         self.ptr
     }
 
     #[inline]
-    pub fn cap(&self) -> usize {
+    pub const fn cap(&self) -> usize {
         self.cap
     }
 
@@ -248,7 +311,10 @@ impl<T> MyRawVec<T> {
 
     #[inline]
     pub unsafe fn from_parts(ptr: NonNull<T>, capacity: usize) -> Self {
-        Self { ptr, cap: capacity }
+        Self {
+            ptr,
+            cap: capacity,
+        }
     }
 
     #[inline]

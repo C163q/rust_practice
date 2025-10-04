@@ -1,21 +1,50 @@
-use std::{mem::MaybeUninit, ptr};
+use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
+use std::{ptr, slice};
 
 /// 类似[`Vec`]，但是预先分配好N个元素的缓冲区，且不会动态扩容。
 #[derive(Debug)]
-pub struct InplaceVec<T, const N: usize> {
+pub struct InplaceVec<const N: usize, T> {
     buf: [MaybeUninit<T>; N],
     len: usize,
 }
 
-impl<T, const N: usize> InplaceVec<T, N> {
+impl<T, const N: usize> InplaceVec<N, T> {
+    pub fn new() -> Self {
+        Self {
+            // 在此我们使用inline const pattern (RFC 2920)，这样T就无须是Copy的。
+            // 可见[rust-lang/rust#76001](https://github.com/rust-lang/rust/issues/76001)
+            buf: [const { MaybeUninit::uninit() }; N],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    pub const fn as_slice(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    #[inline]
+    pub const fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+
+    #[inline]
     pub const fn len(&self) -> usize {
         self.len
     }
 
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+
+    #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    #[inline]
     fn overflow_check(&self) {
         if self.len >= N {
             panic!("InplaceVec overflow");
@@ -37,10 +66,13 @@ impl<T, const N: usize> InplaceVec<T, N> {
         }
     }
 
+    #[inline]
     pub const fn as_ptr(&self) -> *const T {
+        // cast操作是安全的，因为MaybeUninit<T>和T在内存布局上是相同的
         self.buf.as_ptr().cast()
     }
 
+    #[inline]
     pub const fn as_mut_ptr(&mut self) -> *mut T {
         self.buf.as_mut_ptr().cast()
     }
@@ -73,5 +105,41 @@ impl<T, const N: usize> InplaceVec<T, N> {
             );
             result
         }
+    }
+
+    pub fn clear(&mut self) {
+        let drop_array: *mut [T] = self.as_mut_slice();
+
+        unsafe {
+            self.len = 0;
+            ptr::drop_in_place(drop_array);
+        }
+    }
+}
+
+impl<T, const N: usize> Default for InplaceVec<N, T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, const N: usize> Drop for InplaceVec<N, T> {
+    fn drop(&mut self) {
+        unsafe {
+            ptr::drop_in_place(self.as_mut_slice());
+        }
+    }
+}
+
+impl<T, const N: usize> Deref for InplaceVec<N, T> {
+    type Target = [T];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<T, const N: usize> DerefMut for InplaceVec<N, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
     }
 }

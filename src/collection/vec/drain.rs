@@ -117,7 +117,7 @@ impl<T> MyVec<T> {
     /// 都被drain的情况。
     pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Drain<'_, T> {
         let range = collection::slice::range(range, ..self.len);
-        let iter = unsafe { RawValIter::new(&self[range.clone()]) };
+        let iter = unsafe { RawValIter::new(&mut self[range.clone()]) };
 
         let old_len = self.len();
         let before_len = range.start;

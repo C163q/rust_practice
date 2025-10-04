@@ -24,13 +24,23 @@ pub struct MyVec<T> {
 
 impl<T> MyVec<T> {
     #[inline]
-    pub fn as_mut_ptr(&mut self) -> *mut T {
+    pub const fn as_mut_ptr(&mut self) -> *mut T {
         self.buf.ptr().as_ptr()
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> *const T {
+    pub const fn as_ptr(&self) -> *const T {
         self.buf.ptr().as_ptr()
+    }
+
+    #[inline]
+    pub const fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+
+    #[inline]
+    pub const fn as_slice(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 
     #[inline]
@@ -94,7 +104,19 @@ impl<T> MyVec<T> {
     /// 详细说明见[`MyVec::drop`]
     #[inline]
     pub fn clear(&mut self) {
-        while self.pop().is_some() {}
+        let drop_array: *mut [T] = self.as_mut_slice();
+
+        unsafe {
+            // `drop_array`所指向的内容不包含`self.len`，因此此处使用`self.len`
+            // 是可行的。
+            //
+            // 此时使用`self.len = 0`来防止在调用[`ptr::drop_in_place`]时`panic`，
+            // 导致Unwinding时再次调用`drop`，从而二次释放内存。
+            self.len = 0;
+
+            // 对`[T]`使用`drop_in_place`会对其中的每个元素调用`drop`。
+            ptr::drop_in_place(drop_array);
+        }
     }
 
     /// 源自The Rustonomicon
@@ -292,7 +314,7 @@ impl<T> Default for MyVec<T> {
 impl<T> Deref for MyVec<T> {
     type Target = [T];
     fn deref(&self) -> &Self::Target {
-        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+        self.as_slice()
     }
 }
 
@@ -301,7 +323,7 @@ impl<T> Deref for MyVec<T> {
 /// 与[`Deref`]类似，不做赘述。
 impl<T> DerefMut for MyVec<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+        self.as_mut_slice()
     }
 }
 
@@ -322,7 +344,9 @@ impl<T> DerefMut for MyVec<T> {
 /// 注：现已修改为直接调用[`MyVec::clear`]。
 impl<T> Drop for MyVec<T> {
     fn drop(&mut self) {
-        self.clear();
+        unsafe {
+            ptr::drop_in_place(self.as_mut_slice());
+        }
     }
     // `MyRawVec`会自动帮助释放内存空间
 }
