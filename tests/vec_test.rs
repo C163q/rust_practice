@@ -1,3 +1,5 @@
+use std::iter;
+
 use rust_practice::{collection::vec::MyVec, my_vec};
 
 #[test]
@@ -83,6 +85,11 @@ fn vec_drain() {
     // A full range clears the vector, like `clear()` does
     v.drain(..);
     assert_eq!(v, &[]);
+
+    let mut v = my_vec![10, 20, 30];
+    let drained: MyVec<_> = v.drain(1..2).collect();
+    assert_eq!(drained, [20]);
+    assert_eq!(v, [10, 30]);
 }
 
 #[test]
@@ -126,6 +133,10 @@ fn vec_len() {
 
     v.push(1);
     assert!(!v.is_empty());
+
+    let v: MyVec<i32> = iter::empty().collect();
+    assert!(v.is_empty());
+    assert_eq!(v.capacity(), 0);
 }
 
 #[test]
@@ -136,6 +147,12 @@ fn vec_extend_and_from_slice() {
 
     assert_eq!(MyVec::from(&[1, 2, 3][..]), my_vec![1, 2, 3]);
     assert_eq!(MyVec::from(&[1, 2, 3]), my_vec![1, 2, 3]);
+
+    let mut v1 = my_vec![1, 2];
+    let v2 = my_vec![3, 4];
+    v1.extend(v2.clone());
+    assert_eq!(v1, [1, 2, 3, 4]);
+    assert_eq!(v2, [3, 4]); // v2 should not be consumed
 }
 
 #[test]
@@ -149,3 +166,38 @@ fn vec_clone_from() {
     assert_eq!(x, y);
 }
 
+#[test]
+fn vec_zst_support() {
+    let mut v = MyVec::new();
+    assert_eq!(v.len(), 0);
+    assert_eq!(v.capacity(), isize::MAX as usize);
+    v.push(());
+    v.push(());
+    assert_eq!(v.len(), 2);
+    assert_eq!(v.pop(), Some(()));
+    assert_eq!(v.len(), 1);
+    v.clear();
+    assert!(v.is_empty());
+}
+
+#[test]
+fn vec_insert_various_positions() {
+    let mut v = my_vec![1, 3];
+    v.insert(1, 2); // insert in the middle
+    assert_eq!(v, [1, 2, 3]);
+    v.insert(0, 0); // insert at start
+    assert_eq!(v, [0, 1, 2, 3]);
+    v.insert(4, 4); // insert at end
+    assert_eq!(v, [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn vec_remove_various_positions() {
+    let mut v = my_vec![10, 20, 30, 40, 50];
+    assert_eq!(v.remove(0), 10); // remove from start
+    assert_eq!(v, [20, 30, 40, 50]);
+    assert_eq!(v.remove(1), 30); // remove from middle
+    assert_eq!(v, [20, 40, 50]);
+    assert_eq!(v.remove(2), 50); // remove from end
+    assert_eq!(v, [20, 40]);
+}

@@ -1,8 +1,8 @@
-use std::{marker::PhantomData, ops::RangeBounds, ptr::NonNull};
 use std::ptr;
+use std::{marker::PhantomData, ops::RangeBounds, ptr::NonNull};
 
-use crate::collection::vec::{MyVec, raw_val_iter::RawValIter};
 use crate::collection;
+use crate::collection::vec::{MyVec, raw_val_iter::RawValIter};
 
 /// 源自The Rustonomicon
 ///
@@ -61,6 +61,7 @@ pub struct Drain<'a, T: 'a> {
     iter: RawValIter<T>,
     before_len: usize,
     after_len: usize,
+    old_len: usize,
 }
 
 impl<'a, T> Iterator for Drain<'a, T> {
@@ -85,7 +86,6 @@ impl<'a, T> Drop for Drain<'a, T> {
         for _ in &mut *self {}
 
         let vec_ref = unsafe { self.vec.as_mut() };
-        let vec_len = vec_ref.len();
         let vec_ptr = vec_ref.as_mut_ptr();
         // `self.vec.as_mut()`在此处结束生命周期，所以使用*mut T是安全的
 
@@ -93,8 +93,8 @@ impl<'a, T> Drop for Drain<'a, T> {
         let after_len = self.after_len;
 
         // SAFETY:
-        // 此处无论是`before_len`还是`vec_len - after_len`都是不超过
-        // `vec_len`的，因此不会到分配空间之外。
+        // 此处无论是`before_len`还是`old_len - after_len`都是不超过
+        // `old_len`的，因此不会到分配空间之外。
         //
         // 此外，`vec_len - after_len`的结果为创建时的`range.end`，不可能
         // 下溢。
@@ -104,7 +104,7 @@ impl<'a, T> Drop for Drain<'a, T> {
         // 剩下的元素个数，我们用该值恢复[`MyVec`]的长度。
         unsafe {
             let hole_begin = vec_ptr.add(before_len);
-            let hole_end = vec_ptr.add(vec_len - after_len);
+            let hole_end = vec_ptr.add(self.old_len - after_len);
 
             ptr::copy(hole_end, hole_begin, after_len);
             self.vec.as_mut().set_len(before_len + after_len);
@@ -119,14 +119,16 @@ impl<T> MyVec<T> {
         let range = collection::slice::range(range, ..self.len);
         let iter = unsafe { RawValIter::new(&self[range.clone()]) };
 
+        let old_len = self.len();
         let before_len = range.start;
-        let after_len = self.len - range.end;
+        let after_len = self.len() - range.end;
 
         // 这是为了保证在使用`mem::forget`之后，仍然是安全的。如果`Drain`
         // 被forget了，我们就让整个`MyVec`都泄露了。
         self.len = 0;
 
         Drain {
+            old_len,
             before_len,
             after_len,
             iter,

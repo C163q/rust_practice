@@ -5,9 +5,13 @@ mod raw_vec;
 mod vec_macro;
 
 use raw_vec::MyRawVec;
+use std::borrow::{Borrow, BorrowMut};
+use std::hash::{Hash, Hasher};
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
-use std::ptr;
+use std::ptr::NonNull;
 use std::slice;
+use std::{cmp, ptr};
 
 pub use drain::Drain;
 pub use into_iter::IntoIter;
@@ -192,6 +196,37 @@ impl<T> MyVec<T> {
             result
         }
     }
+
+    /// # Safety
+    /// - ptr must have been allocated using the global allocator,
+    ///   such as via the alloc::alloc function.
+    /// - T needs to have the same alignment as what ptr was allocated with.
+    ///   (T having a less strict alignment is not sufficient, the alignment
+    ///   really needs to be equal to satisfy the dealloc requirement that
+    ///   memory must be allocated and deallocated with the same layout.)
+    /// - The size of T times the capacity (ie. the allocated size in bytes)
+    ///   needs to be the same size as the pointer was allocated with. (Because
+    ///   similar to alignment, dealloc must be called with the same layout size.)
+    /// - length needs to be less than or equal to capacity.
+    /// - The first length values must be properly initialized values of type T.
+    /// - capacity needs to be the capacity that the pointer was allocated with.
+    /// - The allocated size in bytes must be no larger than isize::MAX. See
+    ///   the safety documentation of pointer::offset.
+    #[inline]
+    pub unsafe fn from_parts(ptr: NonNull<T>, length: usize, capacity: usize) -> Self {
+        Self {
+            buf: unsafe { MyRawVec::from_parts(ptr, capacity) },
+            len: length,
+        }
+    }
+
+    /// ## Safety
+    pub unsafe fn from_raw_parts(ptr: *mut T, length: usize, capacity: usize) -> Self {
+        Self {
+            buf: unsafe { MyRawVec::from_raw_parts(ptr, capacity) },
+            len: length,
+        }
+    }
 }
 
 impl<'a, T: Clone + 'a> MyVec<T> {
@@ -216,13 +251,9 @@ impl<T: Clone> MyVec<T> {
         let remain = self.capacity() - self.len();
         let needs = other.len();
         if needs > remain {
-            self.reserve(unsafe {
-                needs.unchecked_sub(remain)
-            });
+            self.reserve(unsafe { needs.unchecked_sub(remain) });
         }
-        unsafe {
-            self.unchecked_extend_from_slice(other)
-        }
+        unsafe { self.unchecked_extend_from_slice(other) }
     }
 
     /// ## Safety
@@ -313,6 +344,24 @@ impl<T: Clone> Clone for MyVec<T> {
             len: self.len,
         }
     }
+
+    fn clone_from(&mut self, source: &Self) {
+        if self.capacity() < source.len() {
+            self.reserve(source.len() - self.capacity());
+        }
+        self.clear();
+
+        let ptr = self.as_mut_ptr();
+        for (idx, refer) in source.iter().enumerate() {
+            unsafe {
+                ptr::write(ptr.add(idx), refer.clone());
+            }
+        }
+
+        unsafe {
+            self.set_len(source.len());
+        }
+    }
 }
 
 impl<T: PartialEq> PartialEq for MyVec<T> {
@@ -341,7 +390,7 @@ impl<T: PartialEq, const N: usize> PartialEq<[T; N]> for MyVec<T> {
     }
 }
 
-impl<T: PartialEq, const N: usize> PartialEq<&[T; N]> for MyVec<T>{
+impl<T: PartialEq, const N: usize> PartialEq<&[T; N]> for MyVec<T> {
     fn eq(&self, other: &&[T; N]) -> bool {
         (**self).eq(*other)
     }
@@ -397,3 +446,87 @@ impl<T: Clone, const N: usize> From<&mut [T; N]> for MyVec<T> {
     }
 }
 
+impl<T> From<Vec<T>> for MyVec<T> {
+    fn from(value: Vec<T>) -> Self {
+        // 阻止`Vec`被`drop`，因为我们要接管其内存
+        let mut value = ManuallyDrop::new(value);
+        
+        // `Vec::into_raw_parts`仍然是unstable的特性，在此我们不使用
+        let (ptr, len, cap) = (
+            value.as_mut_ptr(),
+            value.len(),
+            value.capacity(),
+        );
+
+        unsafe { MyVec::from_raw_parts(ptr, len, cap) }
+    }
+}
+
+impl<T> From<MyVec<T>> for Vec<T> {
+    fn from(value: MyVec<T>) -> Self {
+        // 阻止`MyVec`被`drop`，因为我们要接管其内存
+        let mut value = ManuallyDrop::new(value);
+
+        let (ptr, len, cap) = (
+            value.as_mut_ptr(),
+            value.len(),
+            value.capacity(),
+        );
+
+        unsafe { Vec::from_raw_parts(ptr, len, cap) }
+    }
+}
+
+impl<T: PartialOrd> PartialOrd<MyVec<T>> for MyVec<T> {
+    fn partial_cmp(&self, other: &MyVec<T>) -> Option<cmp::Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+
+impl<T: Ord> Ord for MyVec<T> {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl<T> AsMut<[T]> for MyVec<T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        self
+    }
+}
+
+impl<T> AsMut<MyVec<T>> for MyVec<T> {
+    fn as_mut(&mut self) -> &mut MyVec<T> {
+        self
+    }
+}
+
+impl<T> AsRef<[T]> for MyVec<T> {
+    fn as_ref(&self) -> &[T] {
+        self
+    }
+}
+
+impl<T> AsRef<MyVec<T>> for MyVec<T> {
+    fn as_ref(&self) -> &MyVec<T> {
+        self
+    }
+}
+
+impl<T: Hash> Hash for MyVec<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        <T as Hash>::hash_slice(self, state);
+    }
+}
+
+impl<T> Borrow<[T]> for MyVec<T> {
+    fn borrow(&self) -> &[T] {
+        self
+    }
+}
+
+impl<T> BorrowMut<[T]> for MyVec<T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        self
+    }
+}

@@ -246,6 +246,19 @@ impl<T> MyRawVec<T> {
         self.cap = exact_cap;
     }
 
+    #[inline]
+    pub unsafe fn from_parts(ptr: NonNull<T>, capacity: usize) -> Self {
+        Self { ptr, cap: capacity }
+    }
+
+    #[inline]
+    pub unsafe fn from_raw_parts(ptr: *mut T, capacity: usize) -> Self {
+        Self {
+            ptr: unsafe { NonNull::new(ptr).unwrap_unchecked() },
+            cap: capacity,
+        }
+    }
+
     /// 如果分配失败了，`new_ptr`会是空指针，对应产生None，此处使用
     /// `alloc::handle_alloc_error`终止程序。
     #[inline]
