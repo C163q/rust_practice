@@ -80,9 +80,65 @@ impl<T> RawValIter<T> {
     /// 的。
     ///
     /// 此处，The Rustonomicon保守地增加了一个新的分支。
+    ///
+    /// ## 关于miri提出的一个UB
+    ///
+    /// 此处，构建`RawValIter`时，原本的代码如下：
+    ///
+    /// ```rust,ignore
+    /// RawValIter {
+    ///     start: NonNull::from_mut(unsafe { &mut *slice.as_mut_ptr() }),
+    ///     // ...
+    /// ```
+    ///
+    /// Miri指出了如下问题：
+    ///
+    /// ```text
+    /// test vec_drain ... error: Undefined Behavior: attempting a read access using <242808> at alloc74440[0x8],
+    /// but that tag does not exist in the borrow stack for this location
+    ///    --> /home/c163q/Program/workspace/rust/rust_practice/src/collection/vec/raw_val_iter.rs:139:26
+    ///     |
+    /// 139 |                     Some(ptr::read(old_ptr))
+    ///     |                          ^^^^^^^^^^^^^^^^^^ this error occurs as part of an access at alloc74440[0x8..0xc]
+    ///     |
+    ///     = help: this indicates a potential bug in the program: it performed an invalid operation, but the
+    ///       Stacked Borrows rules it violated are still experimental
+    ///     = help: see https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md
+    ///       for further information
+    /// help: <242808> was created by a SharedReadOnly retag at offsets [0x4..0x8]
+    ///    --> /home/c163q/Program/workspace/rust/rust_practice/src/collection/vec/raw_val_iter.rs:85:20
+    ///     |
+    ///  85 |             start: NonNull::from_ref(unsafe { &*slice.as_ptr() }),
+    ///     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ///     = note: BACKTRACE (of the first span) on thread `vec_drain`:
+    ///     = note: inside `<rust_practice::collection::vec::raw_val_iter::RawValIter<i32> as std::iter::Iterator>::next`
+    ///       at /home/c163q/Program/workspace/rust/rust_practice/src/collection/vec/raw_val_iter.rs:139:26: 139:44
+    /// ```
+    ///
+    /// 也就是说，在一个叫做`Stacked Borrows`的模型下，Miri认为这段代
+    /// 码会产生UB。
+    ///
+    /// 标准库文档中并没有提到`Stacked Borrows`，此外，`The Rustonomicon`
+    /// 也没有提及相关内容，不过在[网站](https://plv.mpi-sws.org/rustbelt/stacked-borrows/)
+    /// 上有篇相关论文。
+    ///
+    /// 说句实话，我并没有这个耐心去读完，根据我对`The Rustonomicon`
+    /// 的理解，我认为问题如下：
+    ///
+    /// 一个引用只能向生命周期为其子集的引用转换，且只能向引用的范围
+    /// （内存空间）为其子集的引用转换。（前面一点很容易在文档中找到，
+    /// 后者我印象中有，但是找不到在哪里写的了）
+    ///
+    /// 说这个的原因是，当我使用`&mut *slice.as_mut_ptr()`时，`&mut _`
+    /// 只引用了slice的第一个元素。此时我猜测引用的"Provenance"应该就
+    /// 仅仅只包含第一个元素的内存空间，然后[`NonNull::new`]内部将其转
+    /// 换为了指针，这导致其继承了引用的Provenance，因此如果使用了`offset(1)`，
+    /// 就立即会导致未定义行为。
+    ///
+    /// 当然这只是猜测，需要实际验证。
     pub unsafe fn new(slice: &mut [T]) -> Self {
         RawValIter {
-            start: NonNull::from_mut(unsafe { &mut *slice.as_mut_ptr() }),
+            start: unsafe { NonNull::new(slice.as_mut_ptr()).unwrap_unchecked() },
             end: if mem::size_of::<T>() == 0 {
                 ((slice.as_ptr() as usize) + slice.len()) as *const _
             } else if slice.is_empty() {
