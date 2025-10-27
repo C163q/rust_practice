@@ -1,8 +1,27 @@
+mod into_iter;
+
+pub use into_iter::IntoIter;
+
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::{ptr, slice};
 
 /// 类似[`Vec`]，但是预先分配好N个元素的缓冲区，且不会动态扩容。
+///
+/// ```rust
+/// use rust_practice::collection::inplace_vec::InplaceVec;
+///
+/// let mut vec = InplaceVec::<2, _>::new();
+/// vec.push(1);
+/// vec.push(2);
+/// let ptr = vec.as_mut_ptr();
+/// drop(vec);
+/// assert_eq!(unsafe { *(ptr.offset(1)) }, 2);
+/// ```
+///
+/// `InplaceVec`的内存是自动释放的，因此在使用`*(ptr.offset(1))`时，
+/// 内存仍然有效，而[`i32`]的[`drop`]什么都不做，因此这段代码完全合
+/// 法。
 #[derive(Debug)]
 pub struct InplaceVec<const N: usize, T> {
     buf: [MaybeUninit<T>; N],
@@ -10,7 +29,7 @@ pub struct InplaceVec<const N: usize, T> {
 }
 
 impl<T, const N: usize> InplaceVec<N, T> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             // 在此我们使用inline const pattern (RFC 2920)，这样T就无须是Copy的。
             // 可见[rust-lang/rust#76001](https://github.com/rust-lang/rust/issues/76001)

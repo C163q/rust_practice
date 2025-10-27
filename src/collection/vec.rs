@@ -243,6 +243,7 @@ impl<T> MyVec<T> {
     }
 
     /// ## Safety
+    /// TODO: Finish safety doc
     pub unsafe fn from_raw_parts(ptr: *mut T, length: usize, capacity: usize) -> Self {
         Self {
             buf: unsafe { MyRawVec::from_raw_parts(ptr, capacity) },

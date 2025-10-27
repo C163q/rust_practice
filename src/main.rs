@@ -1,12 +1,12 @@
-use rust_practice::collection::vec::MyVec;
+use rust_practice::collection::inplace_vec::InplaceVec;
 
 fn main() {
-    let mut a = MyVec::new();
-    a.push(1);
-    a.push(2);
-    a.push(3);
-
-    for _ in 0..3 {
-        println!("{}", a.pop().unwrap());
-    }
+    let mut iter = {
+        let mut vec: InplaceVec<2, String> = InplaceVec::new();
+        vec.push("Hello".to_string());
+        println!("{:?}", vec.as_ptr());
+        vec.into_iter()
+    };
+    let s = iter.next().unwrap();
+    println!("{s}");
 }
