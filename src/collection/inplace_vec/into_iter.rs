@@ -147,3 +147,19 @@ impl<const N: usize, T> IntoIterator for InplaceVec<N, T> {
         }
     }
 }
+
+impl<'a, const N: usize, T> IntoIterator for &'a InplaceVec<N, T> {
+    type Item = &'a T;
+    type IntoIter = slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, const N: usize, T> IntoIterator for &'a mut InplaceVec<N, T> {
+    type Item = &'a mut T;
+    type IntoIter = slice::IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}

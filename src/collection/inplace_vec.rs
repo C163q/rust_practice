@@ -1,5 +1,7 @@
+mod drain;
 mod into_iter;
 
+pub use drain::Drain;
 pub use into_iter::IntoIter;
 
 use std::mem::MaybeUninit;

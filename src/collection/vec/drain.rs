@@ -80,14 +80,18 @@ impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
     }
 }
 
+impl<'a, T> ExactSizeIterator for Drain<'a, T> {
+    fn len(&self) -> usize {
+        self.iter.len()
+    }
+}
+
 impl<'a, T> Drop for Drain<'a, T> {
     fn drop(&mut self) {
         // 这会自动drop剩余元素
         for _ in &mut *self {}
 
-        let vec_ref = unsafe { self.vec.as_mut() };
-        let vec_ptr = vec_ref.as_mut_ptr();
-        // `self.vec.as_mut()`在此处结束生命周期，所以使用*mut T是安全的
+        let vec_ptr = self.vec.as_ptr();
 
         let before_len = self.before_len;
         let after_len = self.after_len;
