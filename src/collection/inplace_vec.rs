@@ -4,9 +4,11 @@ mod into_iter;
 pub use drain::Drain;
 pub use into_iter::IntoIter;
 
+use std::borrow::{Borrow, BorrowMut};
+use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
-use std::{ptr, slice};
+use std::{cmp, ptr, slice};
 
 /// 类似[`Vec`]，但是预先分配好N个元素的缓冲区，且不会动态扩容。
 ///
@@ -136,6 +138,17 @@ impl<T, const N: usize> InplaceVec<N, T> {
             ptr::drop_in_place(drop_array);
         }
     }
+
+    fn extend_from_iter<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        for elem in iter {
+            self.overflow_check();
+            unsafe {
+                let ptr = self.as_mut_ptr().add(self.len);
+                ptr::write(ptr, elem);
+                self.len += 1;
+            }
+        }
+    }
 }
 
 impl<T, const N: usize> Default for InplaceVec<N, T> {
@@ -162,5 +175,156 @@ impl<T, const N: usize> Deref for InplaceVec<N, T> {
 impl<T, const N: usize> DerefMut for InplaceVec<N, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
+    }
+}
+
+impl<'a, const N: usize, T: Clone + 'a> InplaceVec<N, T> {
+    fn extend_from_iter_ref<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        for refer in iter {
+            self.overflow_check();
+            unsafe {
+                let ptr = self.as_mut_ptr().add(self.len());
+                ptr::write(ptr, refer.clone());
+                self.len += 1;
+            }
+        }
+    }
+
+    unsafe fn unchecked_extend_from_iter_ref<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        for refer in iter {
+            unsafe {
+                let ptr = self.as_mut_ptr().add(self.len());
+                ptr::write(ptr, refer.clone());
+                self.len += 1;
+            }
+        }
+    }
+}
+
+impl<const N: usize, T: Clone> InplaceVec<N, T> {
+    pub fn extend_from_slice(&mut self, slice: &[T]) {
+        assert!(self.len() + slice.len() <= N, "InplaceVec overflow");
+        unsafe {
+            self.unchecked_extend_from_iter_ref(slice);
+        }
+    }
+}
+
+impl<const N: usize, T> Extend<T> for InplaceVec<N, T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.extend_from_iter(iter);
+    }
+}
+
+impl<'a, const N: usize, T: Clone> Extend<&'a T> for InplaceVec<N, T> {
+    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        self.extend_from_iter_ref(iter);
+    }
+}
+
+impl<const N: usize, T> FromIterator<T> for InplaceVec<N, T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut ret = InplaceVec::new();
+        ret.extend_from_iter(iter);
+        ret
+    }
+}
+
+impl<const N: usize, T: Clone> Clone for InplaceVec<N, T> {
+    fn clone(&self) -> Self {
+        let mut vec = InplaceVec::new();
+        unsafe { vec.unchecked_extend_from_iter_ref(self.as_slice()) };
+        vec
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.clear();
+        unsafe { self.unchecked_extend_from_iter_ref(source) };
+    }
+}
+
+impl<const N: usize, T: PartialEq> PartialEq for InplaceVec<N, T> {
+    fn eq(&self, other: &Self) -> bool {
+        (**self).eq(&**other)
+    }
+}
+
+impl<const N: usize, T: Eq> Eq for InplaceVec<N, T> {}
+
+impl<const N: usize, T: PartialEq> PartialEq<[T]> for InplaceVec<N, T> {
+    fn eq(&self, other: &[T]) -> bool {
+        (**self).eq(other)
+    }
+}
+
+impl<const N: usize, T: PartialEq> PartialEq<&[T]> for InplaceVec<N, T> {
+    fn eq(&self, other: &&[T]) -> bool {
+        (**self).eq(*other)
+    }
+}
+
+impl<const N: usize, T: PartialEq, const M: usize> PartialEq<[T; M]> for InplaceVec<N, T> {
+    fn eq(&self, other: &[T; M]) -> bool {
+        (**self).eq(other)
+    }
+}
+
+impl<const N: usize, T: PartialEq, const M: usize> PartialEq<&[T; M]> for InplaceVec<N, T> {
+    fn eq(&self, other: &&[T; M]) -> bool {
+        (**self).eq(*other)
+    }
+}
+
+impl<const N: usize, T: PartialOrd> PartialOrd<InplaceVec<N, T>> for InplaceVec<N, T> {
+    fn partial_cmp(&self, other: &InplaceVec<N, T>) -> Option<cmp::Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+
+impl<const N: usize, T: Ord> Ord for InplaceVec<N, T> {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl<const N: usize, T> AsMut<[T]> for InplaceVec<N, T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        self
+    }
+}
+
+impl<const N: usize, T> AsMut<InplaceVec<N, T>> for InplaceVec<N, T> {
+    fn as_mut(&mut self) -> &mut InplaceVec<N, T> {
+        self
+    }
+}
+
+impl<const N: usize, T> AsRef<[T]> for InplaceVec<N, T> {
+    fn as_ref(&self) -> &[T] {
+        self
+    }
+}
+
+impl<const N: usize, T> AsRef<InplaceVec<N, T>> for InplaceVec<N, T> {
+    fn as_ref(&self) -> &InplaceVec<N, T> {
+        self
+    }
+}
+
+impl<const N: usize, T: Hash> Hash for InplaceVec<N, T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        <T as Hash>::hash_slice(self, state);
+    }
+}
+
+impl<const N: usize, T> Borrow<[T]> for InplaceVec<N, T> {
+    fn borrow(&self) -> &[T] {
+        self
+    }
+}
+
+impl<const N: usize, T> BorrowMut<[T]> for InplaceVec<N, T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        self
     }
 }
