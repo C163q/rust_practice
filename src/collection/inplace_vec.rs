@@ -243,6 +243,33 @@ impl<const N: usize, T: Clone> Clone for InplaceVec<N, T> {
     }
 }
 
+impl<const N: usize, T: Clone> From<&[T]> for InplaceVec<N, T> {
+    fn from(value: &[T]) -> Self {
+        let mut vec = InplaceVec::new();
+        vec.extend_from_slice(value);
+        vec
+    }
+}
+
+impl<const N: usize, T: Clone> From<&mut [T]> for InplaceVec<N, T> {
+    fn from(value: &mut [T]) -> Self {
+        Self::from(&*value)
+    }
+}
+
+impl<const N: usize, T: Clone, const M: usize> From<&[T; M]> for InplaceVec<N, T> {
+    fn from(value: &[T; M]) -> Self {
+        assert!(M <= N, "InplaceVec overflow");
+        Self::from(value.as_slice())
+    }
+}
+
+impl<const N: usize, T: Clone, const M: usize> From<&mut [T; M]> for InplaceVec<N, T> {
+    fn from(value: &mut [T; M]) -> Self {
+        Self::from(value.as_slice())
+    }
+}
+
 impl<const N: usize, T: PartialEq> PartialEq for InplaceVec<N, T> {
     fn eq(&self, other: &Self) -> bool {
         (**self).eq(&**other)
